@@ -1,0 +1,45 @@
+{
+  "name": "@timdp/depviz",
+  "description": "Visualizes intra-monorepo dependencies.",
+  "version": "0.0.0",
+  "bin": {
+    "depviz": "depviz.js"
+  },
+  "files": [
+    "depviz.js"
+  ],
+  "scripts": {
+    "test": "yarn run lint",
+    "lint": "standard '**/*.js'",
+    "format": "prettier-standard '**/*.js' && standard --fix '**/*.js'"
+  },
+  "dependencies": {
+    "acorn": "^6.1.1",
+    "estree-walker": "^0.6.0",
+    "globby": "^9.2.0",
+    "hard-rejection": "^2.1.0",
+    "lcp": "^1.1.0",
+    "lodash": "^4.17.11",
+    "p-map": "^2.1.0",
+    "read-pkg": "^5.1.1",
+    "read-pkg-up": "^5.0.0"
+  },
+  "devDependencies": {
+    "husky": "^2.1.0",
+    "lint-staged": "^8.1.5",
+    "prettier-standard": "^9.1.1",
+    "standard": "^12.0.1"
+  },
+  "lint-staged": {
+    "*.js": [
+      "prettier-standard",
+      "standard --fix",
+      "git add"
+    ]
+  },
+  "husky": {
+    "hooks": {
+      "pre-commit": "lint-staged"
+    }
+  }
+}
