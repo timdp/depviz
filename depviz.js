@@ -1,24 +1,46 @@
 #!/usr/bin/env node
 
 require('hard-rejection/register')
+const { parse } = require('acorn')
+const Bottleneck = require('bottleneck')
+const stamp = require('console-stamp')
+const { walk } = require('estree-walker')
 const globby = require('globby')
+const LCP = require('lcp')
+const { set, uniq } = require('lodash')
+const mem = require('mem')
 const readPkg = require('read-pkg')
 const readPkgUp = require('read-pkg-up')
-const LCP = require('lcp')
-const { parse } = require('acorn')
-const { walk } = require('estree-walker')
-const pMap = require('p-map')
-const _ = require('lodash')
-const { promises: fs } = require('fs')
-const path = require('path')
 const { spawn } = require('child_process')
+const fs = require('fs')
+const os = require('os')
+const path = require('path')
+const { promisify } = require('util')
 
+const NODE_COLOR_SCHEME_NAME = 'set312'
+const NODE_COLOR_SCHEME_SIZE = 12
 const GRAPH_STYLES = ['rankdir=LR']
-const NODE_STYLES_DEFAULT = ['shape=box', 'fontname=Helvetica']
-const NODE_STYLES_CYCLE = ['color=red', 'fontcolor=red', 'penwidth=2']
+const NODE_STYLES_DEFAULT = [
+  'shape=box',
+  'style=filled',
+  `colorscheme=${NODE_COLOR_SCHEME_NAME}`,
+  'fontname=Helvetica'
+]
+const NODE_STYLES_CYCLE = [
+  'colorscheme=X11',
+  'fillcolor=yellow',
+  'color=red',
+  'fontcolor=red',
+  'penwidth=2'
+]
 const EDGE_STYLES_DEFAULT = []
 const EDGE_STYLES_CYCLE = ['color=red', 'penwidth=2']
 const EDGE_STYLES_NON_PRODUCTION = ['style=dashed']
+const CONCURRENCY = os.cpus().length
+
+const readFile = promisify(fs.readFile)
+
+const readdir = promisify(fs.readdir)
 
 const isRequireContextMemberExpression = node =>
   node.type === 'MemberExpression' &&
@@ -26,7 +48,8 @@ const isRequireContextMemberExpression = node =>
   node.property.name === 'context'
 
 // TODO Mirror Webpack's algorithm more closely
-const onRequireContext = (
+const addModuleRequireContext = async (
+  schedule,
   deps,
   pkgsPath,
   pkgId,
@@ -35,7 +58,9 @@ const onRequireContext = (
   useSubDirectory,
   regExp
 ) => {
-  const { name: dependent } = readPkg.sync({ cwd: path.join(pkgsPath, pkgId) })
+  const { name: dependent } = await schedule(() =>
+    readPkg({ cwd: path.join(pkgsPath, pkgId) })
+  )
   const dirPath = path.join(refPath, directory)
   const globOpts = {
     cwd: dirPath,
@@ -43,8 +68,9 @@ const onRequireContext = (
     onlyFiles: false,
     deep: useSubDirectory
   }
-  const dependencyModules = globby
-    .sync(['**', '!**/node_modules/**'], globOpts)
+  const dependencyModules = (await schedule(() =>
+    globby(['**', '!**/node_modules/**'], globOpts)
+  ))
     .filter(
       mod =>
         regExp.test('./' + mod) ||
@@ -52,80 +78,100 @@ const onRequireContext = (
     )
     .map(mod => path.join(dirPath, mod))
     .map(mod => path.relative(pkgsPath, mod))
-  const dependencies = _.uniq(
-    dependencyModules
-      .map(mod => {
-        const cwd = path.join(pkgsPath, path.dirname(mod))
-        const {
-          pkg: { name: dependency }
-        } = readPkgUp.sync({ cwd })
-        return dependency
-      })
-      .filter(dependency => dependency !== dependent)
+  const dependencies = await Promise.all(
+    dependencyModules.map(async mod => {
+      const cwd = path.join(pkgsPath, path.dirname(mod))
+      const {
+        pkg: { name: dependency }
+      } = await schedule(() => readPkgUp({ cwd }))
+      return dependency
+    })
   )
-  for (const dependency of dependencies) {
-    _.set(deps, [dependent, dependency, 'sources', 'dependencies'], null)
+  const filteredDependencies = uniq(
+    dependencies.filter(dependency => dependency !== dependent)
+  )
+  for (const dependency of filteredDependencies) {
+    set(deps, [dependent, dependency, 'sources', 'dependencies'], null)
   }
 }
 
-const addRequireContexts = async (deps, pkgsPath, pkgIds) => {
-  await Promise.all(
-    pkgIds.map(async pkgId => {
-      const sources = await globby([
-        path.join(pkgsPath, pkgId, '**/*.js'),
-        '!**/node_modules/**'
-      ])
-      await pMap(
-        sources,
-        async file => {
-          const refPath = path.dirname(file)
-          const code = await fs.readFile(file, 'utf8')
-          const ast = parse(code, { sourceType: 'module', allowHashBang: true })
-          walk(ast, {
-            enter (node, parent) {
-              if (!isRequireContextMemberExpression(node)) {
-                return
-              }
-              const [
-                { value: directory },
-                { value: useSubDirectory } = { value: false },
-                { value: regExp } = { value: /^\.\// }
-              ] = parent.arguments
-              onRequireContext(
-                deps,
-                pkgsPath,
-                pkgId,
-                refPath,
-                directory,
-                useSubDirectory,
-                regExp
-              )
-            }
-          })
-        },
-        // TODO Make configurable
-        { concurrency: 5 }
+const addModuleRequireContexts = async (
+  schedule,
+  deps,
+  pkgsPath,
+  pkgId,
+  modId
+) => {
+  const refPath = path.dirname(modId)
+  const code = await schedule(() => readFile(modId, 'utf8'))
+  const ast = parse(code, { sourceType: 'module', allowHashBang: true })
+  const tasks = []
+  walk(ast, {
+    enter (node, parent) {
+      if (!isRequireContextMemberExpression(node)) {
+        return
+      }
+      const [
+        { value: directory },
+        { value: useSubDirectory } = { value: false },
+        { value: regExp } = { value: /^\.\// }
+      ] = parent.arguments
+      tasks.push(
+        addModuleRequireContext(
+          schedule,
+          deps,
+          pkgsPath,
+          pkgId,
+          refPath,
+          directory,
+          useSubDirectory,
+          regExp
+        )
       )
-    })
+    }
+  })
+  await Promise.all(tasks)
+}
+
+const addPkgRequireContexts = async (schedule, deps, pkgsPath, pkgId) => {
+  const modIds = await schedule(() =>
+    globby([path.join(pkgsPath, pkgId, '**/*.js'), '!**/node_modules/**'])
+  )
+  await Promise.all(
+    modIds.map(modId =>
+      addModuleRequireContexts(schedule, deps, pkgsPath, pkgId, modId)
+    )
   )
 }
 
-const buildDeps = async rootPath => {
+const addRequireContexts = async (schedule, deps, pkgsPath, pkgIds) => {
+  await Promise.all(
+    pkgIds.map(pkgId => addPkgRequireContexts(schedule, deps, pkgsPath, pkgId))
+  )
+}
+
+const buildDeps = async (schedule, rootPath) => {
   // TODO Get monorepo/workspace paths from package.json
   const pkgsPath = path.join(rootPath, 'packages')
-  const pkgIds = (await fs.readdir(pkgsPath, { withFileTypes: true }))
+  const pkgIds = (await schedule(() =>
+    readdir(pkgsPath, { withFileTypes: true })
+  ))
     .filter(ent => ent.isDirectory())
     .map(ent => ent.name)
   const deps = {}
   await Promise.all(
     pkgIds.map(async pkgId => {
-      const { name } = await readPkg({ cwd: path.join(pkgsPath, pkgId) })
+      const { name } = await schedule(() =>
+        readPkg({ cwd: path.join(pkgsPath, pkgId) })
+      )
       deps[name] = {}
     })
   )
   await Promise.all(
     pkgIds.map(async pkgId => {
-      const pkg = await readPkg({ cwd: path.join(pkgsPath, pkgId) })
+      const pkg = await schedule(() =>
+        readPkg({ cwd: path.join(pkgsPath, pkgId) })
+      )
       for (const source of [
         'dependencies',
         'devDependencies',
@@ -138,27 +184,29 @@ const buildDeps = async rootPath => {
           deps.hasOwnProperty(name)
         )
         for (const depName of matchingDeps) {
-          _.set(deps, [pkg.name, depName, 'sources', source], null)
+          set(deps, [pkg.name, depName, 'sources', source], null)
         }
       }
     })
   )
-  await addRequireContexts(deps, pkgsPath, pkgIds)
+  await addRequireContexts(schedule, deps, pkgsPath, pkgIds)
   return deps
 }
 
 const markCycles = deps => {
   const queue = Object.keys(deps).map(dependent => [dependent, []])
   const seen = {}
+  let cycleCount = 0
 
   const onCycle = trail => {
     console.warn('Cycle detected: ' + trail.join(' -> '))
     for (let i = 1; i < trail.length; ++i) {
-      _.set(deps, [trail[i - 1], trail[i], 'cycle'], true)
+      set(deps, [trail[i - 1], trail[i], 'cycle'], true)
     }
     for (const pkgName of trail) {
       seen[pkgName] = null
     }
+    ++cycleCount
   }
 
   while (queue.length > 0) {
@@ -175,12 +223,14 @@ const markCycles = deps => {
       }
     }
   }
+
+  return cycleCount
 }
 
 const writeDot = (deps, out) => {
   const nodes = {}
-  const { length } = new LCP(Object.keys(deps)).lcp()
-  const label = str => '"' + str.substr(length) + '"'
+  const { length: lcpLength } = new LCP(Object.keys(deps)).lcp()
+  const label = str => '"' + str.substr(lcpLength) + '"'
   const write = str => {
     out.write(str + '\n')
   }
@@ -189,13 +239,13 @@ const writeDot = (deps, out) => {
     write(`  ${style}`)
   }
   for (const [dependent, dependencyData] of Object.entries(deps)) {
-    _.set(nodes, [dependent, '_'], null)
+    set(nodes, [dependent, '_'], null)
     for (const [dependency, { sources = {}, cycle }] of Object.entries(
       dependencyData
     )) {
       const styles = [...EDGE_STYLES_DEFAULT]
       if (cycle) {
-        _.set(nodes, [dependent, 'cycle'], true)
+        set(nodes, [dependent, 'cycle'], true)
         styles.push(...EDGE_STYLES_CYCLE)
       }
       if (!sources.hasOwnProperty('dependencies')) {
@@ -204,8 +254,18 @@ const writeDot = (deps, out) => {
       write(`  ${label(dependent)} -> ${label(dependency)} [${styles}]`)
     }
   }
+  let idx = 0
+  const getFillColor = mem(() => {
+    const color = idx + 1
+    idx = (idx + 1) % NODE_COLOR_SCHEME_SIZE
+    return color
+  })
   for (const [pkgName, { cycle }] of Object.entries(nodes)) {
     const styles = [...NODE_STYLES_DEFAULT]
+    const comps = pkgName.substr(lcpLength).split('-')
+    const prefix = comps[0] + (comps.length > 1 ? '-' : '')
+    const color = getFillColor(prefix)
+    styles.push('fillcolor=' + color)
     if (cycle) {
       styles.push(...NODE_STYLES_CYCLE)
     }
@@ -237,11 +297,25 @@ const generateImage = (deps, outputFile) =>
   })
 
 const main = async ([rootPath = '.', outputFile = 'dependencies.svg']) => {
+  stamp(console, { pattern: 'HH:MM:ss' })
   rootPath = path.resolve(process.cwd(), rootPath)
   outputFile = path.resolve(rootPath, outputFile)
-  const deps = await buildDeps(rootPath)
-  markCycles(deps)
+  console.info(`Building dependency graph for ${rootPath}`)
+  const limiter = new Bottleneck({ maxConcurrent: CONCURRENCY })
+  const schedule = fn => limiter.schedule(fn)
+  const deps = await buildDeps(schedule, rootPath)
+  console.info(`Found ${Object.keys(deps).length} package(s)`)
+  console.info('Discovering dependency cycles')
+  const cycleCount = markCycles(deps)
+  if (cycleCount > 0) {
+    console.warn(`Found ${cycleCount} dependency cycle(s)`)
+  } else {
+    console.info('No dependency cycles found')
+  }
+  console.info(`Writing dependency graph to ${outputFile}`)
   await generateImage(deps, outputFile)
+  console.info('Completed')
+  process.exit(cycleCount)
 }
 
 main(process.argv.slice(2))

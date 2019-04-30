@@ -15,12 +15,14 @@
   },
   "dependencies": {
     "acorn": "^6.1.1",
+    "bottleneck": "^2.18.0",
+    "console-stamp": "^0.2.7",
     "estree-walker": "^0.6.0",
     "globby": "^9.2.0",
     "hard-rejection": "^2.1.0",
     "lcp": "^1.1.0",
     "lodash": "^4.17.11",
-    "p-map": "^2.1.0",
+    "mem": "^4.3.0",
     "read-pkg": "^5.1.1",
     "read-pkg-up": "^5.0.0"
   },
