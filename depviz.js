@@ -11,6 +11,7 @@ const { set, uniq } = require('lodash')
 const mem = require('mem')
 const readPkg = require('read-pkg')
 const readPkgUp = require('read-pkg-up')
+const yargs = require('yargs')
 const { spawn } = require('child_process')
 const fs = require('fs')
 const os = require('os')
@@ -100,11 +101,21 @@ const addModuleRequireContexts = async (
   deps,
   pkgsPath,
   pkgId,
-  modId
+  modId,
+  allowParseError
 ) => {
   const refPath = path.dirname(modId)
   const code = await schedule(() => readFile(modId, 'utf8'))
-  const ast = parse(code, { sourceType: 'module', allowHashBang: true })
+  let ast
+  try {
+    ast = parse(code, { sourceType: 'module', allowHashBang: true })
+  } catch (err) {
+    if (allowParseError) {
+      console.warn(`${modId}: ${err}`)
+    } else {
+      throw err
+    }
+  }
   const tasks = []
   walk(ast, {
     enter (node, parent) {
@@ -133,24 +144,50 @@ const addModuleRequireContexts = async (
   await Promise.all(tasks)
 }
 
-const addPkgRequireContexts = async (schedule, deps, pkgsPath, pkgId) => {
+const addPkgRequireContexts = async (
+  schedule,
+  deps,
+  pkgsPath,
+  pkgId,
+  allowParseError
+) => {
   const modIds = await schedule(() =>
     globby([path.join(pkgsPath, pkgId, '**/*.js'), '!**/node_modules/**'])
   )
   await Promise.all(
     modIds.map(modId =>
-      addModuleRequireContexts(schedule, deps, pkgsPath, pkgId, modId)
+      addModuleRequireContexts(
+        schedule,
+        deps,
+        pkgsPath,
+        pkgId,
+        modId,
+        allowParseError
+      )
     )
   )
 }
 
-const addRequireContexts = async (schedule, deps, pkgsPath, pkgIds) => {
+const addRequireContexts = async (
+  schedule,
+  deps,
+  pkgsPath,
+  pkgIds,
+  allowParseError
+) => {
   await Promise.all(
-    pkgIds.map(pkgId => addPkgRequireContexts(schedule, deps, pkgsPath, pkgId))
+    pkgIds.map(pkgId =>
+      addPkgRequireContexts(schedule, deps, pkgsPath, pkgId, allowParseError)
+    )
   )
 }
 
-const buildDeps = async (schedule, rootPath) => {
+const buildDeps = async (
+  schedule,
+  rootPath,
+  requireContext,
+  allowParseError
+) => {
   // TODO Get monorepo/workspace paths from package.json
   const pkgsPath = path.join(rootPath, 'packages')
   const pkgIds = (await schedule(() =>
@@ -189,7 +226,9 @@ const buildDeps = async (schedule, rootPath) => {
       }
     })
   )
-  await addRequireContexts(schedule, deps, pkgsPath, pkgIds)
+  if (requireContext) {
+    await addRequireContexts(schedule, deps, pkgsPath, pkgIds, allowParseError)
+  }
   return deps
 }
 
@@ -296,14 +335,31 @@ const generateImage = (deps, outputFile) =>
     writeDot(deps, proc.stdin)
   })
 
-const main = async ([rootPath = '.', outputFile = 'dependencies.svg']) => {
+const main = async () => {
   stamp(console, { pattern: 'HH:MM:ss' })
-  rootPath = path.resolve(process.cwd(), rootPath)
-  outputFile = path.resolve(rootPath, outputFile)
+  const { requireContext, allowParseError, _: args = [] } = yargs
+    .option('require-context', {
+      type: 'boolean',
+      default: false
+    })
+    .option('allow-parse-error', {
+      type: 'boolean',
+      default: false
+    })
+    .strict()
+    .parse()
+  const [rootPathRel = '.', outputFileRel = 'dependencies.svg'] = args
+  const rootPath = path.resolve(process.cwd(), rootPathRel)
+  const outputFile = path.resolve(rootPath, outputFileRel)
   console.info(`Building dependency graph for ${rootPath}`)
   const limiter = new Bottleneck({ maxConcurrent: CONCURRENCY })
   const schedule = fn => limiter.schedule(fn)
-  const deps = await buildDeps(schedule, rootPath)
+  const deps = await buildDeps(
+    schedule,
+    rootPath,
+    requireContext,
+    allowParseError
+  )
   console.info(`Found ${Object.keys(deps).length} package(s)`)
   console.info('Discovering dependency cycles')
   const cycleCount = markCycles(deps)
@@ -318,4 +374,4 @@ const main = async ([rootPath = '.', outputFile = 'dependencies.svg']) => {
   process.exit(cycleCount)
 }
 
-main(process.argv.slice(2))
+main()
