@@ -12,7 +12,7 @@ const mem = require('mem')
 const readPkg = require('read-pkg')
 const readPkgUp = require('read-pkg-up')
 const yargs = require('yargs')
-const { spawn } = require('child_process')
+const { spawn, spawnSync } = require('child_process')
 const fs = require('fs')
 const os = require('os')
 const path = require('path')
@@ -335,8 +335,23 @@ const generateImage = (deps, outputFile) =>
     writeDot(deps, proc.stdin)
   })
 
+const ensureDotExecutable = () => {
+  try {
+    const { error } = spawnSync('dot', ['-?'], {
+      stdio: 'ignore',
+      env: process.env
+    })
+    if (error) {
+      throw error
+    }
+  } catch (err) {
+    throw new Error(`Failed to spawn dot: ${err}`)
+  }
+}
+
 const main = async () => {
   stamp(console, { pattern: 'HH:MM:ss' })
+  ensureDotExecutable()
   const { requireContext, allowParseError, _: args = [] } = yargs
     .option('require-context', {
       type: 'boolean',
