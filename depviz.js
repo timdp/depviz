@@ -83,7 +83,7 @@ const addModuleRequireContext = async (
     dependencyModules.map(async mod => {
       const cwd = path.join(pkgsPath, path.dirname(mod))
       const {
-        pkg: { name: dependency }
+        package: { name: dependency }
       } = await schedule(() => readPkgUp({ cwd }))
       return dependency
     })
@@ -108,11 +108,7 @@ const addModuleRequireContexts = async (
   const code = await schedule(() => readFile(modId, 'utf8'))
   let ast
   try {
-    ast = parse(code, {
-      ecmaVersion: 10,
-      sourceType: 'module',
-      allowHashBang: true
-    })
+    ast = parse(code, { sourceType: 'module', allowHashBang: true })
   } catch (err) {
     if (allowParseError) {
       console.warn(`${modId}: ${err}`)
