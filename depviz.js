@@ -43,6 +43,8 @@ const readFile = promisify(fs.readFile)
 
 const readdir = promisify(fs.readdir)
 
+const has = (object, key) => Object.hasOwnProperty.call(object, key)
+
 const isRequireContextMemberExpression = node =>
   node.type === 'MemberExpression' &&
   node.object.name === 'require' &&
@@ -69,9 +71,9 @@ const addModuleRequireContext = async (
     onlyFiles: false,
     deep: useSubDirectory
   }
-  const dependencyModules = (await schedule(() =>
-    globby(['**', '!**/node_modules/**'], globOpts)
-  ))
+  const dependencyModules = (
+    await schedule(() => globby(['**', '!**/node_modules/**'], globOpts))
+  )
     .filter(
       mod =>
         regExp.test('./' + mod) ||
@@ -190,9 +192,9 @@ const buildDeps = async (
 ) => {
   // TODO Get monorepo/workspace paths from package.json
   const pkgsPath = path.join(rootPath, 'packages')
-  const pkgIds = (await schedule(() =>
-    readdir(pkgsPath, { withFileTypes: true })
-  ))
+  const pkgIds = (
+    await schedule(() => readdir(pkgsPath, { withFileTypes: true }))
+  )
     .filter(ent => ent.isDirectory())
     .map(ent => ent.name)
   const deps = {}
@@ -218,7 +220,7 @@ const buildDeps = async (
           continue
         }
         const matchingDeps = Object.keys(pkg[source]).filter(name =>
-          deps.hasOwnProperty(name)
+          has(deps, name)
         )
         for (const depName of matchingDeps) {
           set(deps, [pkg.name, depName, 'sources', source], null)
@@ -250,7 +252,7 @@ const markCycles = deps => {
 
   while (queue.length > 0) {
     const [pkgName, ancestors] = queue.shift()
-    if (seen.hasOwnProperty(pkgName)) {
+    if (has(seen, pkgName)) {
       continue
     }
     const newAncestors = [...ancestors, pkgName]
@@ -287,7 +289,7 @@ const writeDot = (deps, out) => {
         set(nodes, [dependent, 'cycle'], true)
         styles.push(...EDGE_STYLES_CYCLE)
       }
-      if (!sources.hasOwnProperty('dependencies')) {
+      if (!has(sources, 'dependencies')) {
         styles.push(...EDGE_STYLES_NON_PRODUCTION)
       }
       write(`  ${label(dependent)} -> ${label(dependency)} [${styles}]`)
