@@ -85,7 +85,7 @@ const addModuleRequireContext = async (
     dependencyModules.map(async mod => {
       const cwd = path.join(pkgsPath, path.dirname(mod))
       const {
-        package: { name: dependency }
+        packageJson: { name: dependency }
       } = await schedule(() => readPkgUp({ cwd }))
       return dependency
     })
