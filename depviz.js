@@ -110,7 +110,11 @@ const addModuleRequireContexts = async (
   const code = await schedule(() => readFile(modId, 'utf8'))
   let ast
   try {
-    ast = parse(code, { sourceType: 'module', allowHashBang: true })
+    ast = parse(code, {
+      sourceType: 'module',
+      ecmaVersion: 'latest',
+      allowHashBang: true
+    })
   } catch (err) {
     if (allowParseError) {
       console.warn(`${modId}: ${err}`)
