@@ -115,7 +115,9 @@ const addModuleRequireContexts = async (
     if (allowParseError) {
       console.warn(`${modId}: ${err}`)
     } else {
-      throw err
+      const wrappedErr = new Error(`Failed to parse ${modId}: ${err}`)
+      wrappedErr.cause = err
+      throw wrappedErr
     }
   }
   const tasks = []
