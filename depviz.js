@@ -43,12 +43,17 @@ const readFile = promisify(fs.readFile)
 
 const readdir = promisify(fs.readdir)
 
+const readPkgCwd = mem(cwd => readPkg({ cwd }))
+
 const has = (object, key) => Object.hasOwnProperty.call(object, key)
 
 const isRequireContextMemberExpression = node =>
   node.type === 'MemberExpression' &&
   node.object.name === 'require' &&
   node.property.name === 'context'
+
+const isImportGlobDeclaration = node =>
+  node.type === 'ImportDeclaration' && node.source.value.includes('*')
 
 // TODO Mirror Webpack's algorithm more closely
 const addModuleRequireContext = async (
@@ -62,7 +67,7 @@ const addModuleRequireContext = async (
   regExp
 ) => {
   const { name: dependent } = await schedule(() =>
-    readPkg({ cwd: path.join(pkgsPath, pkgId) })
+    readPkgCwd(path.join(pkgsPath, pkgId))
   )
   const dirPath = path.join(refPath, directory)
   const globOpts = {
@@ -98,7 +103,41 @@ const addModuleRequireContext = async (
   }
 }
 
-const addModuleRequireContexts = async (
+const addModuleImportGlob = async (
+  schedule,
+  deps,
+  pkgsPath,
+  pkgId,
+  refPath,
+  glob
+) => {
+  const { name: dependent } = await schedule(() =>
+    readPkgCwd(path.join(pkgsPath, pkgId))
+  )
+  const matches = await schedule(() => globby(path.join(refPath, glob)))
+  const dependencies = await Promise.all(
+    matches.map(async file => {
+      const relPath = path.relative(pkgsPath, file)
+      if (relPath.startsWith('.')) {
+        return null
+      }
+      const pkgDir = relPath.split(path.sep)[0]
+      const pkgPath = path.join(pkgsPath, pkgDir)
+      const { name } = await readPkgCwd(pkgPath)
+      return name
+    })
+  )
+  const filteredDependencies = uniq(
+    dependencies.filter(
+      dependency => dependency != null && dependency !== dependent
+    )
+  )
+  for (const dependency of filteredDependencies) {
+    set(deps, [dependent, dependency, 'sources', 'dependencies'], null)
+  }
+}
+
+const addModuleBundlerImports = async (
   schedule,
   deps,
   pkgsPath,
@@ -127,32 +166,36 @@ const addModuleRequireContexts = async (
   const tasks = []
   walk(ast, {
     enter (node, parent) {
-      if (!isRequireContextMemberExpression(node)) {
-        return
-      }
-      const [
-        { value: directory },
-        { value: useSubDirectory } = { value: false },
-        { value: regExp } = { value: /^\.\// }
-      ] = parent.arguments
-      tasks.push(
-        addModuleRequireContext(
-          schedule,
-          deps,
-          pkgsPath,
-          pkgId,
-          refPath,
-          directory,
-          useSubDirectory,
-          regExp
+      if (isRequireContextMemberExpression(node)) {
+        const [
+          { value: directory },
+          { value: useSubDirectory } = { value: false },
+          { value: regExp } = { value: /^\.\// }
+        ] = parent.arguments
+        tasks.push(
+          addModuleRequireContext(
+            schedule,
+            deps,
+            pkgsPath,
+            pkgId,
+            refPath,
+            directory,
+            useSubDirectory,
+            regExp
+          )
         )
-      )
+      } else if (isImportGlobDeclaration(node)) {
+        const glob = node.source.value
+        tasks.push(
+          addModuleImportGlob(schedule, deps, pkgsPath, pkgId, refPath, glob)
+        )
+      }
     }
   })
   await Promise.all(tasks)
 }
 
-const addPkgRequireContexts = async (
+const addPkgBundlerImports = async (
   schedule,
   deps,
   pkgsPath,
@@ -164,7 +207,7 @@ const addPkgRequireContexts = async (
   )
   await Promise.all(
     modIds.map(modId =>
-      addModuleRequireContexts(
+      addModuleBundlerImports(
         schedule,
         deps,
         pkgsPath,
@@ -176,7 +219,7 @@ const addPkgRequireContexts = async (
   )
 }
 
-const addRequireContexts = async (
+const addBundlerImports = async (
   schedule,
   deps,
   pkgsPath,
@@ -185,7 +228,7 @@ const addRequireContexts = async (
 ) => {
   await Promise.all(
     pkgIds.map(pkgId =>
-      addPkgRequireContexts(schedule, deps, pkgsPath, pkgId, allowParseError)
+      addPkgBundlerImports(schedule, deps, pkgsPath, pkgId, allowParseError)
     )
   )
 }
@@ -193,7 +236,7 @@ const addRequireContexts = async (
 const buildDeps = async (
   schedule,
   rootPath,
-  requireContext,
+  bundlerImports,
   allowParseError
 ) => {
   // TODO Get monorepo/workspace paths from package.json
@@ -207,16 +250,14 @@ const buildDeps = async (
   await Promise.all(
     pkgIds.map(async pkgId => {
       const { name } = await schedule(() =>
-        readPkg({ cwd: path.join(pkgsPath, pkgId) })
+        readPkgCwd(path.join(pkgsPath, pkgId))
       )
       deps[name] = {}
     })
   )
   await Promise.all(
     pkgIds.map(async pkgId => {
-      const pkg = await schedule(() =>
-        readPkg({ cwd: path.join(pkgsPath, pkgId) })
-      )
+      const pkg = await schedule(() => readPkgCwd(path.join(pkgsPath, pkgId)))
       for (const source of [
         'dependencies',
         'devDependencies',
@@ -234,8 +275,8 @@ const buildDeps = async (
       }
     })
   )
-  if (requireContext) {
-    await addRequireContexts(schedule, deps, pkgsPath, pkgIds, allowParseError)
+  if (bundlerImports) {
+    await addBundlerImports(schedule, deps, pkgsPath, pkgIds, allowParseError)
   }
   return deps
 }
@@ -360,10 +401,11 @@ const ensureDotExecutable = () => {
 const main = async () => {
   stamp(console, { pattern: 'HH:MM:ss' })
   ensureDotExecutable()
-  const { requireContext, allowParseError, _: args = [] } = yargs
-    .option('require-context', {
+  const { bundlerImports, allowParseError, _: args = [] } = yargs
+    .option('bundler-imports', {
       type: 'boolean',
-      default: false
+      default: false,
+      alias: 'require-context'
     })
     .option('allow-parse-error', {
       type: 'boolean',
@@ -380,7 +422,7 @@ const main = async () => {
   const deps = await buildDeps(
     schedule,
     rootPath,
-    requireContext,
+    bundlerImports,
     allowParseError
   )
   console.info(`Found ${Object.keys(deps).length} package(s)`)
