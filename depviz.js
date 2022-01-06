@@ -120,14 +120,11 @@ const addModuleImportGlob = async (
   const matches = await schedule(() => globby(path.join(refPath, glob)))
   const dependencies = await Promise.all(
     matches.map(async file => {
-      if (
-        !extensions.includes(
-          path
-            .extname(file)
-            .substring(1)
-            .toLowerCase()
-        )
-      ) {
+      const ext = path
+        .extname(file)
+        .substring(1)
+        .toLowerCase()
+      if (!extensions.includes(ext)) {
         return null
       }
       const relPath = path.relative(pkgsPath, file)
@@ -226,9 +223,11 @@ const addPkgBundlerImports = async (
   extensions,
   allowParseError
 ) => {
+  const extGlob =
+    extensions.length === 1 ? extensions[0] : '{' + extensions.join(',') + '}'
   const modIds = await schedule(() =>
     globby([
-      path.join(pkgsPath, pkgId, '**/*.{' + extensions.join(',') + '}'),
+      path.join(pkgsPath, pkgId, '**/*.' + extGlob),
       '!**/node_modules/**'
     ])
   )
