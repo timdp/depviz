@@ -61,6 +61,7 @@ const addModuleRequireContext = async (
   deps,
   pkgsPath,
   pkgId,
+  extensions,
   refPath,
   directory,
   useSubDirectory,
@@ -86,6 +87,7 @@ const addModuleRequireContext = async (
     )
     .map(mod => path.join(dirPath, mod))
     .map(mod => path.relative(pkgsPath, mod))
+  // TODO Filter extensions
   const dependencies = await Promise.all(
     dependencyModules.map(async mod => {
       const cwd = path.join(pkgsPath, path.dirname(mod))
@@ -108,6 +110,7 @@ const addModuleImportGlob = async (
   deps,
   pkgsPath,
   pkgId,
+  extensions,
   refPath,
   glob
 ) => {
@@ -117,6 +120,16 @@ const addModuleImportGlob = async (
   const matches = await schedule(() => globby(path.join(refPath, glob)))
   const dependencies = await Promise.all(
     matches.map(async file => {
+      if (
+        !extensions.includes(
+          path
+            .extname(file)
+            .substring(1)
+            .toLowerCase()
+        )
+      ) {
+        return null
+      }
       const relPath = path.relative(pkgsPath, file)
       if (relPath.startsWith('.')) {
         return null
@@ -142,6 +155,7 @@ const addModuleBundlerImports = async (
   deps,
   pkgsPath,
   pkgId,
+  extensions,
   modId,
   allowParseError
 ) => {
@@ -178,6 +192,7 @@ const addModuleBundlerImports = async (
             deps,
             pkgsPath,
             pkgId,
+            extensions,
             refPath,
             directory,
             useSubDirectory,
@@ -187,7 +202,15 @@ const addModuleBundlerImports = async (
       } else if (isImportGlobDeclaration(node)) {
         const glob = node.source.value
         tasks.push(
-          addModuleImportGlob(schedule, deps, pkgsPath, pkgId, refPath, glob)
+          addModuleImportGlob(
+            schedule,
+            deps,
+            pkgsPath,
+            pkgId,
+            extensions,
+            refPath,
+            glob
+          )
         )
       }
     }
@@ -200,10 +223,14 @@ const addPkgBundlerImports = async (
   deps,
   pkgsPath,
   pkgId,
+  extensions,
   allowParseError
 ) => {
   const modIds = await schedule(() =>
-    globby([path.join(pkgsPath, pkgId, '**/*.js'), '!**/node_modules/**'])
+    globby([
+      path.join(pkgsPath, pkgId, '**/*.{' + extensions.join(',') + '}'),
+      '!**/node_modules/**'
+    ])
   )
   await Promise.all(
     modIds.map(modId =>
@@ -212,6 +239,7 @@ const addPkgBundlerImports = async (
         deps,
         pkgsPath,
         pkgId,
+        extensions,
         modId,
         allowParseError
       )
@@ -224,11 +252,19 @@ const addBundlerImports = async (
   deps,
   pkgsPath,
   pkgIds,
+  extensions,
   allowParseError
 ) => {
   await Promise.all(
     pkgIds.map(pkgId =>
-      addPkgBundlerImports(schedule, deps, pkgsPath, pkgId, allowParseError)
+      addPkgBundlerImports(
+        schedule,
+        deps,
+        pkgsPath,
+        pkgId,
+        extensions,
+        allowParseError
+      )
     )
   )
 }
@@ -237,6 +273,7 @@ const buildDeps = async (
   schedule,
   rootPath,
   bundlerImports,
+  extensions,
   allowParseError
 ) => {
   // TODO Get monorepo/workspace paths from package.json
@@ -276,7 +313,14 @@ const buildDeps = async (
     })
   )
   if (bundlerImports) {
-    await addBundlerImports(schedule, deps, pkgsPath, pkgIds, allowParseError)
+    await addBundlerImports(
+      schedule,
+      deps,
+      pkgsPath,
+      pkgIds,
+      extensions,
+      allowParseError
+    )
   }
   return deps
 }
@@ -318,7 +362,7 @@ const markCycles = deps => {
 const writeDot = (deps, out) => {
   const nodes = {}
   const { length: lcpLength } = new LCP(Object.keys(deps)).lcp()
-  const label = str => '"' + str.substr(lcpLength) + '"'
+  const label = str => '"' + str.substring(lcpLength) + '"'
   const write = str => {
     out.write(str + '\n')
   }
@@ -350,7 +394,7 @@ const writeDot = (deps, out) => {
   })
   for (const [pkgName, { cycle }] of Object.entries(nodes)) {
     const styles = [...NODE_STYLES_DEFAULT]
-    const comps = pkgName.substr(lcpLength).split('-')
+    const comps = pkgName.substring(lcpLength).split('-')
     const prefix = comps[0] + (comps.length > 1 ? '-' : '')
     const color = getFillColor(prefix)
     styles.push('fillcolor=' + color)
@@ -367,7 +411,7 @@ const generateImage = (deps, outputFile) =>
   new Promise((resolve, reject) => {
     const outputType = path
       .extname(outputFile)
-      .substr(1)
+      .substring(1)
       .toLowerCase()
     const proc = spawn('dot', ['-T' + outputType, '-o', outputFile], {
       stdio: 'pipe',
@@ -401,7 +445,16 @@ const ensureDotExecutable = () => {
 const main = async () => {
   stamp(console, { pattern: 'HH:MM:ss' })
   ensureDotExecutable()
-  const { bundlerImports, allowParseError, _: args = [] } = yargs
+  const {
+    extensions: extensionsStr,
+    bundlerImports,
+    allowParseError,
+    _: args = []
+  } = yargs
+    .option('extensions', {
+      type: 'string',
+      default: 'js'
+    })
     .option('bundler-imports', {
       type: 'boolean',
       default: false,
@@ -413,6 +466,9 @@ const main = async () => {
     })
     .strict()
     .parse()
+  const extensions = extensionsStr
+    .split(',')
+    .map(ext => ext.trim().toLowerCase())
   const [rootPathRel = '.', outputFileRel = 'dependencies.svg'] = args
   const rootPath = path.resolve(process.cwd(), rootPathRel)
   const outputFile = path.resolve(rootPath, outputFileRel)
@@ -423,6 +479,7 @@ const main = async () => {
     schedule,
     rootPath,
     bundlerImports,
+    extensions,
     allowParseError
   )
   console.info(`Found ${Object.keys(deps).length} package(s)`)
