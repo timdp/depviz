@@ -11,7 +11,8 @@
   "scripts": {
     "test": "yarn run lint",
     "lint": "standard '**/*.js'",
-    "format": "prettier-standard '**/*.js' && standard --fix '**/*.js'"
+    "format": "prettier-standard '**/*.js' && standard --fix '**/*.js'",
+    "postpublish": "git push && git push --tags"
   },
   "dependencies": {
     "acorn": "^8.0.1",
