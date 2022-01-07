@@ -1,7 +1,7 @@
 {
   "name": "@timdp/depviz",
   "description": "Visualizes intra-monorepo dependencies.",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "bin": {
     "depviz": "depviz.js"
   },
