@@ -413,7 +413,7 @@ const generateImage = (deps, outputFile) =>
       .substring(1)
       .toLowerCase()
     const proc = spawn('dot', ['-T' + outputType, '-o', outputFile], {
-      stdio: 'pipe',
+      stdio: ['pipe', 'ignore', 'inherit'],
       env: process.env
     })
     proc.on('exit', code => {
