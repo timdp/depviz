@@ -1,7 +1,7 @@
 {
   "name": "@timdp/depviz",
   "description": "Visualizes intra-monorepo dependencies.",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "type": "module",
   "engines": {
     "node": ">=16"
