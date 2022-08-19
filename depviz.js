@@ -350,7 +350,6 @@ const main = async () => {
       type: 'boolean',
       default: false
     })
-    .strict()
     .parse()
   const extensions = extensionsStr
     .split(',')
