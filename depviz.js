@@ -8,7 +8,7 @@ import { spawn, spawnSync } from 'child_process'
 import stamp from 'console-stamp'
 import { walk } from 'estree-walker'
 import { readFile } from 'fs/promises'
-import { globby } from 'globby'
+import { globby, isGitIgnored } from 'globby'
 import LCP from 'lcp'
 import { set, uniq } from 'lodash-es'
 import mem from 'mem'
@@ -40,6 +40,8 @@ const EDGE_STYLES_NON_PRODUCTION = ['style=dashed']
 
 const parser = Parser.extend(jsx())
 
+const isIgnored = await isGitIgnored()
+
 const has = (object, key) => Object.hasOwnProperty.call(object, key)
 
 const isImportGlobDeclaration = (node) =>
@@ -54,23 +56,21 @@ const addModuleImportGlob = async (
   glob
 ) => {
   const { name: dependent } = await readPackage({ cwd: pkgDir })
-  const matches = await globby(glob, {
-    cwd: refPath,
-    absolute: true,
-    gitignore: true
-  })
-  const dependencies = await Promise.all(
-    matches.map(async (file) => {
-      const ext = path.extname(file).substring(1).toLowerCase()
-      if (!extensions.includes(ext)) {
-        return null
-      }
-      if (path.relative(rootPath, file).startsWith('.')) {
-        return null
-      }
-      const { packageJson } = await readPackageUp({ cwd: file })
-      return packageJson.name
+  const matches = (
+    await globby(glob, {
+      cwd: refPath,
+      absolute: true
     })
+  ).filter(
+    (file) =>
+      !isIgnored(file) &&
+      extensions.includes(path.extname(file).substring(1).toLowerCase()) &&
+      !path.relative(rootPath, file).startsWith('.')
+  )
+  const dependencies = await Promise.all(
+    matches.map(
+      async (file) => (await readPackageUp({ cwd: file })).packageJson.name
+    )
   )
   const filteredDependencies = uniq(
     dependencies.filter(
@@ -132,17 +132,15 @@ const addPkgBundlerImports = async (
 ) => {
   const extGlob =
     extensions.length === 1 ? extensions[0] : '{' + extensions.join(',') + '}'
-  const modIds = await globby(
-    ['*.' + extGlob, '**/*/*.' + extGlob, '!**/node_modules/**'],
-    {
+  const modIds = (
+    await globby(['*.' + extGlob, '**/*/*.' + extGlob, '!**/node_modules/**'], {
       cwd: pkgDir,
-      absolute: true,
-      gitignore: true
-    }
-  )
+      absolute: true
+    })
+  ).filter((modId) => !isIgnored(modId))
   await Promise.all(
-    modIds.map((modId) =>
-      addModuleBundlerImports(
+    modIds.map(async (modId) => {
+      await addModuleBundlerImports(
         deps,
         rootPath,
         pkgDir,
@@ -150,7 +148,7 @@ const addPkgBundlerImports = async (
         modId,
         allowParseError
       )
-    )
+    })
   )
 }
 
@@ -162,9 +160,15 @@ const addBundlerImports = async (
   allowParseError
 ) => {
   await Promise.all(
-    pkgDirs.map((pkgDir) =>
-      addPkgBundlerImports(deps, rootPath, pkgDir, extensions, allowParseError)
-    )
+    pkgDirs.map(async (pkgDir) => {
+      await addPkgBundlerImports(
+        deps,
+        rootPath,
+        pkgDir,
+        extensions,
+        allowParseError
+      )
+    })
   )
 }
 
@@ -177,6 +181,7 @@ const buildDeps = async (
   const { workspaces } = await readPackage({ cwd: rootPath })
   const pkgDirs = await globby(workspaces, {
     cwd: rootPath,
+    absolute: true,
     onlyDirectories: true
   })
   const deps = {}
