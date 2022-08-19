@@ -16,7 +16,7 @@
     "test": "eslint \"**/*.js\"",
     "format": "prettier-eslint --write \"$PWD/**/*.js\"",
     "prepare": "husky install",
-    "postpublish": "git push --tags"
+    "postpublish": "git push && git push --tags"
   },
   "dependencies": {
     "acorn": "^8.0.1",
