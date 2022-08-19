@@ -1,22 +1,22 @@
 #!/usr/bin/env node
 
-require('hard-rejection/register')
-const { parse } = require('acorn')
-const Bottleneck = require('bottleneck')
-const stamp = require('console-stamp')
-const { walk } = require('estree-walker')
-const globby = require('globby')
-const LCP = require('lcp')
-const { set, uniq } = require('lodash')
-const mem = require('mem')
-const readPkg = require('read-pkg')
-const readPkgUp = require('read-pkg-up')
-const yargs = require('yargs')
-const { spawn, spawnSync } = require('child_process')
-const fs = require('fs')
-const os = require('os')
-const path = require('path')
-const { promisify } = require('util')
+import 'hard-rejection/register.js'
+
+import { Parser } from 'acorn'
+import jsx from 'acorn-jsx'
+import { spawn, spawnSync } from 'child_process'
+import stamp from 'console-stamp'
+import { walk } from 'estree-walker'
+import { readFile } from 'fs/promises'
+import { globby } from 'globby'
+import LCP from 'lcp'
+import { set, uniq } from 'lodash-es'
+import mem from 'mem'
+import path from 'path'
+import { readPackage } from 'read-pkg'
+import { readPackageUp } from 'read-pkg-up'
+import yargs from 'yargs'
+import { hideBin } from 'yargs/helpers'
 
 const NODE_COLOR_SCHEME_NAME = 'set312'
 const NODE_COLOR_SCHEME_SIZE = 12
@@ -37,109 +37,42 @@ const NODE_STYLES_CYCLE = [
 const EDGE_STYLES_DEFAULT = []
 const EDGE_STYLES_CYCLE = ['color=red', 'penwidth=2']
 const EDGE_STYLES_NON_PRODUCTION = ['style=dashed']
-const CONCURRENCY = os.cpus().length
 
-const readFile = promisify(fs.readFile)
-
-const readdir = promisify(fs.readdir)
-
-const readPkgCwd = mem(cwd => readPkg({ cwd }))
+const parser = Parser.extend(jsx())
 
 const has = (object, key) => Object.hasOwnProperty.call(object, key)
 
-const isRequireContextMemberExpression = node =>
-  node.type === 'MemberExpression' &&
-  node.object.name === 'require' &&
-  node.property.name === 'context'
-
-const isImportGlobDeclaration = node =>
+const isImportGlobDeclaration = (node) =>
   node.type === 'ImportDeclaration' && node.source.value.includes('*')
 
-// TODO Mirror Webpack's algorithm more closely
-const addModuleRequireContext = async (
-  schedule,
-  deps,
-  pkgsPath,
-  pkgId,
-  extensions,
-  refPath,
-  directory,
-  useSubDirectory,
-  regExp
-) => {
-  const { name: dependent } = await schedule(() =>
-    readPkgCwd(path.join(pkgsPath, pkgId))
-  )
-  const dirPath = path.join(refPath, directory)
-  const globOpts = {
-    cwd: dirPath,
-    dot: true,
-    onlyFiles: false,
-    deep: useSubDirectory
-  }
-  const dependencyModules = (
-    await schedule(() => globby(['**', '!**/node_modules/**'], globOpts))
-  )
-    .filter(
-      mod =>
-        regExp.test('./' + mod) ||
-        regExp.test('./' + mod.replace(/\.[^./]+$/, ''))
-    )
-    .map(mod => path.join(dirPath, mod))
-    .map(mod => path.relative(pkgsPath, mod))
-  // TODO Filter extensions
-  const dependencies = await Promise.all(
-    dependencyModules.map(async mod => {
-      const cwd = path.join(pkgsPath, path.dirname(mod))
-      const {
-        packageJson: { name: dependency }
-      } = await schedule(() => readPkgUp({ cwd }))
-      return dependency
-    })
-  )
-  const filteredDependencies = uniq(
-    dependencies.filter(dependency => dependency !== dependent)
-  )
-  for (const dependency of filteredDependencies) {
-    set(deps, [dependent, dependency, 'sources', 'dependencies'], null)
-  }
-}
-
 const addModuleImportGlob = async (
-  schedule,
   deps,
-  pkgsPath,
-  pkgId,
+  rootPath,
+  pkgDir,
   extensions,
   refPath,
   glob
 ) => {
-  const { name: dependent } = await schedule(() =>
-    readPkgCwd(path.join(pkgsPath, pkgId))
-  )
-  const matches = await schedule(() => globby(path.join(refPath, glob)))
+  const { name: dependent } = await readPackage({ cwd: pkgDir })
+  const matches = await globby(glob, { cwd: refPath, absolute: true })
   const dependencies = await Promise.all(
-    matches.map(async file => {
-      const ext = path
-        .extname(file)
-        .substring(1)
-        .toLowerCase()
+    matches.map(async (file) => {
+      const ext = path.extname(file).substring(1).toLowerCase()
       if (!extensions.includes(ext)) {
         return null
       }
-      const relPath = path.relative(pkgsPath, file)
-      if (relPath.startsWith('.')) {
+      if (path.relative(rootPath, file).startsWith('.')) {
         return null
       }
-      const pkgDir = relPath.split(path.sep)[0]
-      const pkgPath = path.join(pkgsPath, pkgDir)
-      const { name } = await readPkgCwd(pkgPath)
+      const {
+        packageJson: { name }
+      } = await readPackageUp({ cwd: file })
       return name
     })
   )
   const filteredDependencies = uniq(
     dependencies.filter(
-      dependency => dependency != null && dependency !== dependent
+      (dependency) => dependency != null && dependency !== dependent
     )
   )
   for (const dependency of filteredDependencies) {
@@ -148,66 +81,39 @@ const addModuleImportGlob = async (
 }
 
 const addModuleBundlerImports = async (
-  schedule,
   deps,
-  pkgsPath,
-  pkgId,
+  rootPath,
+  pkgDir,
   extensions,
   modId,
   allowParseError
 ) => {
   const refPath = path.dirname(modId)
-  const code = await schedule(() => readFile(modId, 'utf8'))
+  const code = await readFile(modId, 'utf8')
   let ast
   try {
-    ast = parse(code, {
+    ast = parser.parse(code, {
       sourceType: 'module',
       ecmaVersion: 'latest',
       allowHashBang: true
     })
-  } catch (err) {
+  } catch (error) {
     if (allowParseError) {
-      console.warn(`${modId}: ${err}`)
+      console.warn(`${modId}: ${error}`)
     } else {
-      const wrappedErr = new Error(`Failed to parse ${modId}: ${err}`)
-      wrappedErr.cause = err
+      const wrappedErr = new Error(`Failed to parse ${modId}: ${error}`)
+      wrappedErr.cause = error
       throw wrappedErr
     }
   }
   const tasks = []
   walk(ast, {
-    enter (node, parent) {
-      if (isRequireContextMemberExpression(node)) {
-        const [
-          { value: directory },
-          { value: useSubDirectory } = { value: false },
-          { value: regExp } = { value: /^\.\// }
-        ] = parent.arguments
-        tasks.push(
-          addModuleRequireContext(
-            schedule,
-            deps,
-            pkgsPath,
-            pkgId,
-            extensions,
-            refPath,
-            directory,
-            useSubDirectory,
-            regExp
-          )
-        )
-      } else if (isImportGlobDeclaration(node)) {
+    enter (node) {
+      // TODO Support require.resolve()
+      if (isImportGlobDeclaration(node)) {
         const glob = node.source.value
         tasks.push(
-          addModuleImportGlob(
-            schedule,
-            deps,
-            pkgsPath,
-            pkgId,
-            extensions,
-            refPath,
-            glob
-          )
+          addModuleImportGlob(deps, rootPath, pkgDir, extensions, refPath, glob)
         )
       }
     }
@@ -216,28 +122,27 @@ const addModuleBundlerImports = async (
 }
 
 const addPkgBundlerImports = async (
-  schedule,
   deps,
-  pkgsPath,
-  pkgId,
+  rootPath,
+  pkgDir,
   extensions,
   allowParseError
 ) => {
   const extGlob =
     extensions.length === 1 ? extensions[0] : '{' + extensions.join(',') + '}'
-  const modIds = await schedule(() =>
-    globby([
-      path.join(pkgsPath, pkgId, '**/*.' + extGlob),
-      '!**/node_modules/**'
-    ])
+  const modIds = await globby(
+    ['*.' + extGlob, '**/*/*.' + extGlob, '!**/node_modules/**'],
+    {
+      cwd: pkgDir,
+      absolute: true
+    }
   )
   await Promise.all(
-    modIds.map(modId =>
+    modIds.map((modId) =>
       addModuleBundlerImports(
-        schedule,
         deps,
-        pkgsPath,
-        pkgId,
+        rootPath,
+        pkgDir,
         extensions,
         modId,
         allowParseError
@@ -247,53 +152,40 @@ const addPkgBundlerImports = async (
 }
 
 const addBundlerImports = async (
-  schedule,
   deps,
-  pkgsPath,
-  pkgIds,
+  rootPath,
+  pkgDirs,
   extensions,
   allowParseError
 ) => {
   await Promise.all(
-    pkgIds.map(pkgId =>
-      addPkgBundlerImports(
-        schedule,
-        deps,
-        pkgsPath,
-        pkgId,
-        extensions,
-        allowParseError
-      )
+    pkgDirs.map((pkgDir) =>
+      addPkgBundlerImports(deps, rootPath, pkgDir, extensions, allowParseError)
     )
   )
 }
 
 const buildDeps = async (
-  schedule,
   rootPath,
   bundlerImports,
   extensions,
   allowParseError
 ) => {
-  // TODO Get monorepo/workspace paths from package.json
-  const pkgsPath = path.join(rootPath, 'packages')
-  const pkgIds = (
-    await schedule(() => readdir(pkgsPath, { withFileTypes: true }))
-  )
-    .filter(ent => ent.isDirectory())
-    .map(ent => ent.name)
+  const { workspaces } = await readPackage({ cwd: rootPath })
+  const pkgDirs = await globby(workspaces, {
+    cwd: rootPath,
+    onlyDirectories: true
+  })
   const deps = {}
   await Promise.all(
-    pkgIds.map(async pkgId => {
-      const { name } = await schedule(() =>
-        readPkgCwd(path.join(pkgsPath, pkgId))
-      )
+    pkgDirs.map(async (pkgDir) => {
+      const { name } = await readPackage({ cwd: pkgDir })
       deps[name] = {}
     })
   )
   await Promise.all(
-    pkgIds.map(async pkgId => {
-      const pkg = await schedule(() => readPkgCwd(path.join(pkgsPath, pkgId)))
+    pkgDirs.map(async (pkgDir) => {
+      const pkg = await readPackage({ cwd: pkgDir })
       for (const source of [
         'dependencies',
         'devDependencies',
@@ -302,7 +194,7 @@ const buildDeps = async (
         if (pkg[source] == null) {
           continue
         }
-        const matchingDeps = Object.keys(pkg[source]).filter(name =>
+        const matchingDeps = Object.keys(pkg[source]).filter((name) =>
           has(deps, name)
         )
         for (const depName of matchingDeps) {
@@ -313,10 +205,9 @@ const buildDeps = async (
   )
   if (bundlerImports) {
     await addBundlerImports(
-      schedule,
       deps,
-      pkgsPath,
-      pkgIds,
+      rootPath,
+      pkgDirs,
       extensions,
       allowParseError
     )
@@ -324,12 +215,12 @@ const buildDeps = async (
   return deps
 }
 
-const markCycles = deps => {
-  const queue = Object.keys(deps).map(dependent => [dependent, []])
+const markCycles = (deps) => {
+  const queue = Object.keys(deps).map((dependent) => [dependent, []])
   const seen = {}
   let cycleCount = 0
 
-  const onCycle = trail => {
+  const onCycle = (trail) => {
     console.warn('Cycle detected: ' + trail.join(' -> '))
     for (let i = 1; i < trail.length; ++i) {
       set(deps, [trail[i - 1], trail[i], 'cycle'], true)
@@ -361,8 +252,8 @@ const markCycles = deps => {
 const writeDot = (deps, out) => {
   const nodes = {}
   const { length: lcpLength } = new LCP(Object.keys(deps)).lcp()
-  const label = str => '"' + str.substring(lcpLength) + '"'
-  const write = str => {
+  const label = (str) => '"' + str.substring(lcpLength) + '"'
+  const write = (str) => {
     out.write(str + '\n')
   }
   write('digraph g {')
@@ -408,15 +299,12 @@ const writeDot = (deps, out) => {
 
 const generateImage = (deps, outputFile) =>
   new Promise((resolve, reject) => {
-    const outputType = path
-      .extname(outputFile)
-      .substring(1)
-      .toLowerCase()
+    const outputType = path.extname(outputFile).substring(1).toLowerCase()
     const proc = spawn('dot', ['-T' + outputType, '-o', outputFile], {
       stdio: ['pipe', 'ignore', 'inherit'],
       env: process.env
     })
-    proc.on('exit', code => {
+    proc.on('exit', (code) => {
       if (code !== 0) {
         reject(new Error(`Exited with ${code}`))
       } else {
@@ -436,8 +324,8 @@ const ensureDotExecutable = () => {
     if (error) {
       throw error
     }
-  } catch (err) {
-    throw new Error(`Failed to spawn dot: ${err}`)
+  } catch (error) {
+    throw new Error(`Failed to spawn dot: ${error}`)
   }
 }
 
@@ -449,15 +337,14 @@ const main = async () => {
     bundlerImports,
     allowParseError,
     _: args = []
-  } = yargs
+  } = yargs(hideBin(process.argv))
     .option('extensions', {
       type: 'string',
       default: 'js'
     })
     .option('bundler-imports', {
       type: 'boolean',
-      default: false,
-      alias: 'require-context'
+      default: false
     })
     .option('allow-parse-error', {
       type: 'boolean',
@@ -467,15 +354,12 @@ const main = async () => {
     .parse()
   const extensions = extensionsStr
     .split(',')
-    .map(ext => ext.trim().toLowerCase())
+    .map((ext) => ext.trim().toLowerCase())
   const [rootPathRel = '.', outputFileRel = 'dependencies.svg'] = args
   const rootPath = path.resolve(process.cwd(), rootPathRel)
   const outputFile = path.resolve(rootPath, outputFileRel)
   console.info(`Building dependency graph for ${rootPath}`)
-  const limiter = new Bottleneck({ maxConcurrent: CONCURRENCY })
-  const schedule = fn => limiter.schedule(fn)
   const deps = await buildDeps(
-    schedule,
     rootPath,
     bundlerImports,
     extensions,

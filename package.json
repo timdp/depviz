@@ -2,6 +2,7 @@
   "name": "@timdp/depviz",
   "description": "Visualizes intra-monorepo dependencies.",
   "version": "0.3.2",
+  "type": "module",
   "bin": {
     "depviz": "depviz.js"
   },
@@ -9,40 +10,43 @@
     "depviz.js"
   ],
   "scripts": {
-    "test": "yarn run lint",
-    "lint": "standard '**/*.js'",
-    "format": "prettier-standard '**/*.js' && standard --fix '**/*.js'",
-    "postpublish": "git push && git push --tags"
+    "test": "eslint \"**/*.js\"",
+    "format": "prettier-eslint --write \"$PWD/**/*.js\"",
+    "prepare": "husky install",
+    "postpublish": "git push --tags"
   },
   "dependencies": {
     "acorn": "^8.0.1",
-    "bottleneck": "^2.19.5",
-    "console-stamp": "^0.2.9",
-    "estree-walker": "^2.0.1",
-    "globby": "^11.0.1",
+    "acorn-jsx": "^5.3.2",
+    "console-stamp": "^3.0.6",
+    "estree-walker": "^3.0.1",
+    "globby": "^13.1.2",
     "hard-rejection": "^2.1.0",
     "lcp": "^1.1.0",
-    "lodash": "^4.17.20",
-    "mem": "^6.1.0",
-    "read-pkg": "^5.2.0",
-    "read-pkg-up": "^7.0.1",
-    "yargs": "^15.4.1"
+    "lodash-es": "^4.17.21",
+    "mem": "^9.0.2",
+    "read-pkg": "^7.1.0",
+    "read-pkg-up": "^9.1.0",
+    "yargs": "^17.5.1"
   },
   "devDependencies": {
-    "husky": "^4.2.5",
-    "lint-staged": "^10.2.11",
-    "prettier-standard": "^16.4.1",
-    "standard": "^14.3.4"
+    "eslint": "^8.18.0",
+    "eslint-config-standard": "^17.0.0",
+    "eslint-plugin-import": "^2.26.0",
+    "eslint-plugin-n": "^15.2.3",
+    "eslint-plugin-promise": "^6.0.0",
+    "eslint-plugin-simple-import-sort": "^7.0.0",
+    "husky": "^8.0.1",
+    "lint-staged": "^13.0.2",
+    "prettier-eslint-cli": "^7.0.0"
   },
   "lint-staged": {
     "*.js": [
-      "prettier-standard",
-      "standard --fix"
+      "prettier-eslint --write"
     ]
   },
-  "husky": {
-    "hooks": {
-      "pre-commit": "lint-staged"
-    }
+  "funding": {
+    "type": "github",
+    "url": "https://github.com/sponsors/timdp"
   }
 }
