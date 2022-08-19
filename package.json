@@ -3,6 +3,9 @@
   "description": "Visualizes intra-monorepo dependencies.",
   "version": "0.3.2",
   "type": "module",
+  "engines": {
+    "node": ">=16"
+  },
   "bin": {
     "depviz": "depviz.js"
   },
