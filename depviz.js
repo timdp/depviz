@@ -54,7 +54,11 @@ const addModuleImportGlob = async (
   glob
 ) => {
   const { name: dependent } = await readPackage({ cwd: pkgDir })
-  const matches = await globby(glob, { cwd: refPath, absolute: true })
+  const matches = await globby(glob, {
+    cwd: refPath,
+    absolute: true,
+    gitignore: true
+  })
   const dependencies = await Promise.all(
     matches.map(async (file) => {
       const ext = path.extname(file).substring(1).toLowerCase()
@@ -64,10 +68,8 @@ const addModuleImportGlob = async (
       if (path.relative(rootPath, file).startsWith('.')) {
         return null
       }
-      const {
-        packageJson: { name }
-      } = await readPackageUp({ cwd: file })
-      return name
+      const { packageJson } = await readPackageUp({ cwd: file })
+      return packageJson.name
     })
   )
   const filteredDependencies = uniq(
@@ -134,7 +136,8 @@ const addPkgBundlerImports = async (
     ['*.' + extGlob, '**/*/*.' + extGlob, '!**/node_modules/**'],
     {
       cwd: pkgDir,
-      absolute: true
+      absolute: true,
+      gitignore: true
     }
   )
   await Promise.all(
