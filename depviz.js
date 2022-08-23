@@ -341,11 +341,22 @@ const main = async () => {
   stamp(console, { pattern: 'HH:MM:ss' })
   ensureDotExecutable()
   const {
+    path: rootPathRel,
+    output: outputFileRel,
     extensions: extensionsStr,
     bundlerImports,
-    allowParseError,
-    _: args = []
+    allowParseError
   } = yargs(hideBin(process.argv))
+    .option('path', {
+      type: 'string',
+      alias: 'p',
+      default: '.'
+    })
+    .option('output', {
+      type: 'string',
+      alias: 'o',
+      default: 'dependencies.svg'
+    })
     .option('extensions', {
       type: 'string',
       default: 'js'
@@ -358,11 +369,11 @@ const main = async () => {
       type: 'boolean',
       default: false
     })
+    .strict()
     .parse()
   const extensions = extensionsStr
     .split(',')
     .map((ext) => ext.trim().toLowerCase())
-  const [rootPathRel = '.', outputFileRel = 'dependencies.svg'] = args
   const rootPath = path.resolve(process.cwd(), rootPathRel)
   const outputFile = path.resolve(rootPath, outputFileRel)
   console.info(`Building dependency graph for ${rootPath}`)
